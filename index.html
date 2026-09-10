@@ -87,8 +87,13 @@ tbody tr:hover td{background:#101923} tbody tr{cursor:pointer}
     </div>
 
     <div class="filtersRow">
-      <div class="filtersLabel">Screen Size</div>
-      <div class="filters" id="filters"><button class="filter active" data-filter="All">All <small>57</small></button><button class="filter" data-filter="Portable">Portable <small>3</small></button><button class="filter" data-filter="24&quot;">24&quot; <small>4</small></button><button class="filter" data-filter="27&quot;">27&quot; <small>32</small></button><button class="filter" data-filter="32&quot;">32&quot; <small>14</small></button><button class="filter" data-filter="34&quot;">34&quot; <small>4</small></button></div>
+      <div class="filtersLabel">Category</div>
+      <div class="filters" id="categoryFilters"></div>
+    </div>
+
+    <div class="filtersRow" id="subFiltersRow">
+      <div class="filtersLabel" id="subFiltersLabel">Screen Size</div>
+      <div class="filters" id="filters"></div>
     </div>
 
     <div class="meta">
@@ -626,12 +631,14 @@ tbody tr:hover td{background:#101923} tbody tr{cursor:pointer}
     </table>
   </div>
 
-  <div class="footer">MSRP USD is the fixed master price based on the original ASUS list at 55 EGP/USD. Hassan changes the exchange rate and MSRP EGP recalculates automatically. The selected exchange rate is saved on this browser.</div>
+  <div class="footer">Data is loaded live from the published Google Sheet. Category tabs such as MONITOR, MOTHERBOARD, VGA, COOLING, PSU, ACC and CASES are detected automatically. The selected exchange rate is saved on this browser.</div>
 </div>
 
 <script>
 (async function(){
-  const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT12gz1YKsEYFzkO5SkC2d6iI2-N06jxiQyRJVb_tqwY5edTsz-dZLmdE1e4azQ3xRUF8kqYs71xqNR/pub?gid=357708439&single=true&output=csv";
+  const PUBLISHED_KEY = "2PACX-1vT12gz1YKsEYFzkO5SkC2d6iI2-N06jxiQyRJVb_tqwY5edTsz-dZLmdE1e4azQ3xRUF8kqYs71xqNR";
+  const PUB_HTML_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_KEY}/pubhtml`;
+  const DEFAULT_MONITOR_GID = "357708439";
   const SLACK_WEBHOOK = ""; // Disabled in public GitHub Pages build
   const RATE_KEY="asus_monitor_usd_rate";
 
@@ -640,6 +647,9 @@ tbody tr:hover td{background:#101923} tbody tr{cursor:pointer}
   const rate=document.getElementById("rate");
   const count=document.getElementById("count");
   const filtersBox=document.getElementById("filters");
+  const categoryFiltersBox=document.getElementById("categoryFilters");
+  const subFiltersRow=document.getElementById("subFiltersRow");
+  const subFiltersLabel=document.getElementById("subFiltersLabel");
   const sourceStatus=document.getElementById("sourceStatus");
 
   const qs=new URLSearchParams(location.search);
@@ -650,16 +660,18 @@ tbody tr:hover td{background:#101923} tbody tr{cursor:pointer}
   if(savedRate>0) rate.value=savedRate;
 
   let active="All";
+  let activeCategory="MONITOR";
   let products=[];
   let rows=[];
 
   function cleanSize(v){
-    const s=String(v??"").trim().replace(/"/g,"");
+    const raw=String(v??"").trim();
+    const s=raw.replace(/"/g,"").trim();
     if(!s) return "";
     if(/portable/i.test(s)) return "Portable";
-    if(s==="14" || s==="15.6" || s==="16" || s==="17.3") return "Portable";
-    if(["24","27","32","34"].includes(s)) return s+'"';
-    return s.includes('"') ? s : s;
+    if(["14","15.6","16","17.3"].includes(s)) return "Portable";
+    if(/^\d+(?:\.\d+)?$/.test(s)) return s+'"';
+    return raw;
   }
 
   function parseCSV(csv){
@@ -686,17 +698,28 @@ tbody tr:hover td{background:#101923} tbody tr{cursor:pointer}
     return Number.isFinite(n)?n:0;
   }
 
-  function normalize(data){
+  function normalize(data, category="MONITOR"){
     if(!data.length) return [];
     const headers=data[0].map(h=>String(h).trim().toLowerCase());
-    const idx=(name)=>headers.indexOf(name);
-    const im=idx("model"), isz=idx("size"), ipn=idx("part number"), iean=idx("ean"), iusd=idx("msrp usd");
+    const idx=(...names)=>{ for(const n of names){ const i=headers.indexOf(n); if(i>=0) return i; } return -1; };
+    const im=idx("model","item","product");
+    const isz=idx("size","screen size");
+    const ipn=idx("part number","part no","pn");
+    const iean=idx("ean","upc");
+    const iusd=idx("msrp usd","usd","price usd");
+    const igroup=idx("group","platform","type");
+    const isub=idx("subgroup","series","wattage group","chipset family");
+    const iwatt=idx("wattage","watt","power");
     return data.slice(1).map(r=>({
-      model:String(r[im]??"").trim(),
-      size:cleanSize(r[isz]),
-      part_number:String(r[ipn]??"").trim(),
-      ean:String(r[iean]??"").trim(),
-      usd:moneyUSD(r[iusd])
+      category:String(category||"MONITOR").trim().toUpperCase(),
+      model:String(im>=0?(r[im]??""):"").trim(),
+      size:cleanSize(isz>=0?r[isz]:""),
+      part_number:String(ipn>=0?(r[ipn]??""):"").trim(),
+      ean:String(iean>=0?(r[iean]??""):"").trim(),
+      usd:moneyUSD(iusd>=0?r[iusd]:0),
+      group:String(igroup>=0?(r[igroup]??""):"").trim(),
+      subgroup:String(isub>=0?(r[isub]??""):"").trim(),
+      wattage:String(iwatt>=0?(r[iwatt]??""):"").trim()
     })).filter(p=>p.model && p.usd>0);
   }
 
@@ -705,12 +728,14 @@ tbody tr:hover td{background:#101923} tbody tr{cursor:pointer}
   }
 
   function renderRows(){
-    tbody.innerHTML=products.map((p,i)=>{
+    const current=products.filter(p=>p.category===activeCategory);
+    tbody.innerHTML=current.map((p,i)=>{
       const egp=p.usd*(parseFloat(rate.value)||55);
-      return `<tr data-model="${esc(p.model)}" data-pn="${esc(p.part_number)}" data-ean="${esc(p.ean)}" data-size="${esc(p.size)}" data-usd="${p.usd}">
+      const descriptor=p.size || p.subgroup || p.group || "—";
+      return `<tr data-category="${esc(p.category)}" data-model="${esc(p.model)}" data-pn="${esc(p.part_number)}" data-ean="${esc(p.ean)}" data-size="${esc(p.size)}" data-group="${esc(p.group)}" data-subgroup="${esc(p.subgroup)}" data-wattage="${esc(p.wattage)}" data-usd="${p.usd}">
         <td class="rownum">${i+1}</td>
         <td class="modelCell">${esc(p.model)}</td>
-        <td class="sizeCell">${esc(p.size)}</td>
+        <td class="sizeCell">${esc(descriptor)}</td>
         <td class="mono">${esc(p.part_number)}</td>
         <td class="mono">${esc(p.ean)}</td>
         <td class="price usd">$${p.usd.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
@@ -721,11 +746,49 @@ tbody tr:hover td{background:#101923} tbody tr{cursor:pointer}
     bindRowTracking();
   }
 
+  function renderCategoryFilters(){
+    const preferred=["MONITOR","MOTHERBOARD","VGA","COOLING","PSU","ACC","CASES"];
+    const cats=[...new Set(products.map(p=>p.category).filter(Boolean))].sort((a,b)=>{
+      const ia=preferred.indexOf(a), ib=preferred.indexOf(b);
+      if(ia>=0 || ib>=0){ if(ia<0)return 1; if(ib<0)return -1; return ia-ib; }
+      return a.localeCompare(b);
+    });
+    if(!cats.includes(activeCategory)) activeCategory=cats[0]||"MONITOR";
+    categoryFiltersBox.innerHTML=cats.map(c=>`<button class="filter${c===activeCategory?" active":""}" data-category="${esc(c)}">${esc(c)} <small>${products.filter(p=>p.category===c).length}</small></button>`).join("");
+    [...categoryFiltersBox.querySelectorAll(".filter")].forEach(btn=>btn.addEventListener("click",()=>{
+      activeCategory=btn.dataset.category; active="All";
+      [...categoryFiltersBox.querySelectorAll(".filter")].forEach(b=>b.classList.toggle("active",b===btn));
+      renderRows(); renderFilters(); recalcPrices(); apply();
+    }));
+  }
+
   function renderFilters(){
-    const order=["All","Portable",'24"','27"','32"','34"'];
-    const counts={All:products.length};
-    order.slice(1).forEach(s=>counts[s]=products.filter(p=>p.size===s).length);
-    filtersBox.innerHTML=order.map(s=>`<button class="filter${s===active?" active":""}" data-filter="${esc(s)}">${esc(s)} <small>${counts[s]||0}</small></button>`).join("");
+    const current=products.filter(p=>p.category===activeCategory);
+    let values=[]; let label="Filter";
+    if(activeCategory==="MONITOR"){
+      label="Screen Size";
+      values=[...new Set(current.map(p=>p.size).filter(Boolean))];
+      values.sort((a,b)=>{if(a==="Portable")return -1;if(b==="Portable")return 1;return (parseFloat(a)||999)-(parseFloat(b)||999);});
+    }else if(activeCategory==="PSU"){
+      label="By Wattage";
+      current.forEach(p=>{
+        if(!p.subgroup && p.wattage){
+          const w=parseFloat(p.wattage);
+          if(Number.isFinite(w)) p.subgroup=w<=650?"650W or Less":w<=850?"700–850W":w<=1200?"1000–1200W":"More than 1200W";
+        }
+      });
+      values=[...new Set(current.map(p=>p.subgroup||p.group).filter(Boolean))];
+    }else{
+      const labels={MOTHERBOARD:"Platform / Series",VGA:"GPU Family / Series",COOLING:"Cooling Type",ACC:"Accessory Type",CASES:"Case Type"};
+      label=labels[activeCategory]||"Type / Series";
+      values=[...new Set(current.map(p=>p.subgroup||p.group).filter(Boolean))];
+    }
+    values.sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true}));
+    const order=["All",...values];
+    if(!order.includes(active)) active="All";
+    subFiltersLabel.textContent=label;
+    subFiltersRow.style.display=order.length>1?"flex":"none";
+    filtersBox.innerHTML=order.map(s=>`<button class="filter${s===active?" active":""}" data-filter="${esc(s)}">${esc(s)} <small>${s==="All"?current.length:current.filter(p=>p.size===s||p.subgroup===s||p.group===s).length}</small></button>`).join("");
     [...filtersBox.querySelectorAll(".filter")].forEach(btn=>btn.addEventListener("click",()=>{
       active=btn.dataset.filter;
       [...filtersBox.querySelectorAll(".filter")].forEach(b=>b.classList.toggle("active",b===btn));
@@ -745,8 +808,8 @@ tbody tr:hover td{background:#101923} tbody tr{cursor:pointer}
     const q=(search.value||"").trim().toLowerCase();
     let shown=0;
     rows.forEach(r=>{
-      const okSize=active==="All"||r.dataset.size===active;
-      const hay=(r.dataset.model+" "+r.dataset.pn+" "+r.dataset.ean).toLowerCase();
+      const okSize=active==="All"||r.dataset.size===active||r.dataset.subgroup===active||r.dataset.group===active;
+      const hay=(r.dataset.model+" "+r.dataset.pn+" "+r.dataset.ean+" "+(r.dataset.group||"")+" "+(r.dataset.subgroup||"")).toLowerCase();
       const okSearch=!q||hay.includes(q);
       const show=okSize&&okSearch;
       r.classList.toggle("hiddenRow",!show);
@@ -816,39 +879,62 @@ tbody tr:hover td{background:#101923} tbody tr{cursor:pointer}
     rate._t=setTimeout(()=>track("RATE CHANGE",{usd_rate:rate.value}),900);
   });
 
-  // Keep the embedded table as a fallback in case Google Sheet fetch is unavailable.
+  async function fetchText(url){
+    const res=await fetch(url + (url.includes("?") ? "&" : "?") + "_=" + Date.now(), {cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    return await res.text();
+  }
+
+  function discoverPublishedTabs(pubHtml){
+    const found=[]; const seen=new Set();
+    const decoded=pubHtml.replace(/&amp;/g,"&");
+    const patterns=[
+      /(?:gid=|#gid=)(\d+)[^>]*>([^<]{1,80})<\/a>/gi,
+      /sheet-button-(\d+)[\s\S]{0,500}?>([^<]{1,80})<\/a>/gi
+    ];
+    for(const rx of patterns){
+      let m;
+      while((m=rx.exec(decoded))){
+        const gid=m[1]; const name=m[2].replace(/<[^>]+>/g,"").trim();
+        if(name && !seen.has(gid)){found.push({name,gid});seen.add(gid);}
+      }
+    }
+    return found;
+  }
+
+  // Embedded monitor rows are a fallback only.
   const fallbackRows=[...tbody.querySelectorAll("tr")];
   products=fallbackRows.map(r=>({
-    model:r.dataset.model,
-    size:r.dataset.size,
-    part_number:r.dataset.pn,
-    ean:r.dataset.ean,
-    usd:parseFloat(r.dataset.usd)||0
+    category:"MONITOR", model:r.dataset.model, size:r.dataset.size, part_number:r.dataset.pn,
+    ean:r.dataset.ean, usd:parseFloat(r.dataset.usd)||0, group:"", subgroup:"", wattage:""
   }));
   rows=fallbackRows;
-  renderFilters();
-  recalcPrices();
-  apply();
-  bindRowTracking();
+  renderCategoryFilters(); renderFilters(); recalcPrices(); apply(); bindRowTracking();
 
   try{
-    const res=await fetch(SHEET_CSV_URL + (SHEET_CSV_URL.includes("?") ? "&" : "?") + "_=" + Date.now(), {cache:"no-store"});
-    if(!res.ok) throw new Error("HTTP "+res.status);
-    const csv=await res.text();
-    const live=normalize(parseCSV(csv));
-    if(live.length){
-      products=live;
-      renderRows();
-      renderFilters();
-      recalcPrices();
-      apply();
-      sourceStatus.textContent="Live from Published Google Sheet";
-      sourceStatus.parentElement.querySelector("b").style.color="#64dfb6";
-    }else{
-      throw new Error("No valid rows");
+    const liveProducts=[];
+    const allowed=new Set(["MONITOR","MONITORS","MOTHERBOARD","MOTHERBOARDS","VGA","COOLING","PSU","ACC","CASES","CASE"]);
+    let tabs=[];
+    try{ tabs=discoverPublishedTabs(await fetchText(PUB_HTML_URL)); }catch(e){}
+    if(!tabs.some(t=>/monitor/i.test(t.name))) tabs.push({name:"MONITOR",gid:DEFAULT_MONITOR_GID});
+
+    for(const tab of tabs){
+      let category=String(tab.name||"").trim().toUpperCase();
+      if(category==="MONITORS") category="MONITOR";
+      if(category==="MOTHERBOARDS") category="MOTHERBOARD";
+      if(category==="CASE") category="CASES";
+      if(!allowed.has(category)) continue;
+      const csvUrl=`https://docs.google.com/spreadsheets/d/e/${PUBLISHED_KEY}/pub?gid=${encodeURIComponent(tab.gid)}&single=true&output=csv`;
+      try{ liveProducts.push(...normalize(parseCSV(await fetchText(csvUrl)),category)); }catch(e){}
     }
+
+    if(!liveProducts.length) throw new Error("No valid live rows");
+    products=liveProducts;
+    renderCategoryFilters(); renderRows(); renderFilters(); recalcPrices(); apply();
+    sourceStatus.textContent="Live from Published Google Sheet";
+    sourceStatus.parentElement.querySelector("b").style.color="#64dfb6";
   }catch(e){
-    sourceStatus.textContent="Using embedded fallback — publish/share the Google Sheet to enable live updates";
+    sourceStatus.textContent="Using embedded fallback — publish the Google Sheet to enable live updates";
   }
 
   setTimeout(()=>track("PAGE VIEW",{page:location.href,rate:rate.value,source:sourceStatus.textContent}),500);
