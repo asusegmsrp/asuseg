@@ -194,6 +194,9 @@ tbody tr:hover td{background:#101923}
  const title=document.getElementById("sheetTitle"), sourceName=document.getElementById("sourceName"), empty=document.getElementById("empty"), downloadExcel=document.getElementById("downloadExcel");
  const saved=parseFloat(localStorage.getItem(RATE_KEY)); if(saved>0) rate.value=saved;
  let config=[], activeCat="", activeSub="All", products=[];
+ const CATEGORY_STORAGE_KEY="asus_msrp_active_category";
+ let preferredCategory="";
+ try{preferredCategory=localStorage.getItem(CATEGORY_STORAGE_KEY)||"";}catch(e){}
 
  function parseCSV(csv){
   const out=[]; let row=[],cell="",q=false;
@@ -269,7 +272,10 @@ tbody tr:hover td{background:#101923}
 
  async function loadCategory(name){
   const cfg=config.find(c=>c.category===name); if(!cfg)return;
-  activeCat=name; activeSub="All"; renderCategories(); status.textContent="Loading "+name+"…"; title.textContent="ASUS "+name+" Price List"; sourceName.textContent=name;
+  activeCat=name;
+  activeSub="All";
+  try{localStorage.setItem(CATEGORY_STORAGE_KEY,activeCat);}catch(e){}
+  renderCategories(); status.textContent="Loading "+name+"…"; title.textContent="ASUS "+name+" Price List"; sourceName.textContent=name;
   try{ products=normalizeProducts(await fetchCSV(cfg.gid),cfg); status.textContent="Live from Published Google Sheet"; renderSubFilters(cfg); renderRows(); }
   catch(e){ products=[]; status.textContent="Could not load this category"; renderSubFilters(cfg); renderRows(); }
  }
@@ -341,7 +347,11 @@ tbody tr:hover td{background:#101923}
  search.addEventListener("input",renderRows);
  rate.addEventListener("input",()=>{localStorage.setItem(RATE_KEY,String(Math.max(parseFloat(rate.value)||55,.01)));renderRows();});
  try{config=parseConfig(await fetchCSV(CONFIG_GID)); if(!config.length)throw new Error("empty config");} catch(e){config=fallbackConfig;}
- activeCat=config[0]?.category||"Monitors"; renderCategories(); await loadCategory(activeCat);
+ activeCat=(preferredCategory && config.some(c=>c.category===preferredCategory))
+   ? preferredCategory
+   : (config[0]?.category||"Monitors");
+ renderCategories();
+ await loadCategory(activeCat);
 })();
 </script>
 
